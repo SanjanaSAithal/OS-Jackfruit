@@ -279,66 +279,180 @@ static void bounded_buffer_begin_shutdown(bounded_buffer_t *buffer)
 }
 
 /*
- * TODO:
- * Implement producer-side insertion into the bounded buffer.
+ * bounded_buffer_push - producer inserts a log chunk into the buffer.
  *
- * Requirements:
- *   - block or fail according to your chosen policy when the buffer is full
- *   - wake consumers correctly
- *   - stop cleanly if shutdown begins
+ * Blocks while the buffer is full. Returns 0 on success, -1 if shutting down.
  */
 int bounded_buffer_push(bounded_buffer_t *buffer, const log_item_t *item)
 {
-    (void)buffer;
-    (void)item;
-    return -1;
+    pthread_mutex_lock(&buffer->mutex);
+
+    /* Wait while buffer is full and we are not shutting down */
+    while (buffer->count == LOG_BUFFER_CAPACITY && !buffer->shutting_down)
+        pthread_cond_wait(&buffer->not_full, &buffer->mutex);
+
+    /* If shutting down, bail out */
+    if (buffer->shutting_down) {
+        pthread_mutex_unlock(&buffer->mutex);
+        return -1;
+    }
+
+    /* Copy item into the tail slot and advance tail circularly */
+    buffer->items[buffer->tail] = *item;
+    buffer->tail = (buffer->tail + 1) % LOG_BUFFER_CAPACITY;
+    buffer->count++;
+
+    /* Wake up a waiting consumer */
+    pthread_cond_signal(&buffer->not_empty);
+    pthread_mutex_unlock(&buffer->mutex);
+    return 0;
 }
 
 /*
- * TODO:
- * Implement consumer-side removal from the bounded buffer.
+ * bounded_buffer_pop - consumer removes a log chunk from the buffer.
  *
- * Requirements:
- *   - wait correctly while the buffer is empty
- *   - return a useful status when shutdown is in progress
- *   - avoid races with producers and shutdown
+ * Blocks while the buffer is empty. Returns 0 on success, -1 if shutting
+ * down and the buffer is also empty (nothing left to drain).
  */
 int bounded_buffer_pop(bounded_buffer_t *buffer, log_item_t *item)
 {
-    (void)buffer;
-    (void)item;
-    return -1;
+    pthread_mutex_lock(&buffer->mutex);
+
+    /* Wait while buffer is empty and we are not shutting down */
+    while (buffer->count == 0 && !buffer->shutting_down)
+        pthread_cond_wait(&buffer->not_empty, &buffer->mutex);
+
+    /* If shutting down AND nothing left to drain, signal done */
+    if (buffer->count == 0 && buffer->shutting_down) {
+        pthread_mutex_unlock(&buffer->mutex);
+        return -1;
+    }
+
+    /* Copy item out of the head slot and advance head circularly */
+    *item = buffer->items[buffer->head];
+    buffer->head = (buffer->head + 1) % LOG_BUFFER_CAPACITY;
+    buffer->count--;
+
+    /* Wake up a waiting producer */
+    pthread_cond_signal(&buffer->not_full);
+    pthread_mutex_unlock(&buffer->mutex);
+    return 0;
 }
 
 /*
- * TODO:
- * Implement the logging consumer thread.
+ * logging_thread - consumer thread that drains the bounded buffer to log files.
  *
- * Suggested responsibilities:
- *   - remove log chunks from the bounded buffer
- *   - route each chunk to the correct per-container log file
- *   - exit cleanly when shutdown begins and pending work is drained
+ * Each log chunk carries a container_id. We open (or create) the matching
+ * log file under LOG_DIR and append the chunk data. The thread exits once
+ * the buffer is shutting down and fully drained.
  */
 void *logging_thread(void *arg)
 {
-    (void)arg;
+    supervisor_ctx_t *ctx = (supervisor_ctx_t *)arg;
+    log_item_t item;
+
+    /* Make sure the log directory exists */
+    mkdir(LOG_DIR, 0755);
+
+    while (bounded_buffer_pop(&ctx->log_buffer, &item) == 0) {
+        char log_path[PATH_MAX];
+        int fd;
+
+        /* Build path: logs/<container_id>.log */
+        snprintf(log_path, sizeof(log_path), "%s/%s.log",
+                 LOG_DIR, item.container_id);
+
+        /* Open in append mode, create if missing */
+        fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd < 0) {
+            perror("logging_thread: open");
+            continue;
+        }
+
+        /* Write the chunk — loop to handle short writes */
+        size_t written = 0;
+        while (written < item.length) {
+            ssize_t n = write(fd, item.data + written, item.length - written);
+            if (n < 0) {
+                perror("logging_thread: write");
+                break;
+            }
+            written += (size_t)n;
+        }
+
+        close(fd);
+    }
+
     return NULL;
 }
 
 /*
- * TODO:
- * Implement the clone child entrypoint.
+ * child_fn - entry point for the cloned container process.
  *
- * Required outcomes:
- *   - isolated PID / UTS / mount context
- *   - chroot or pivot_root into rootfs
- *   - working /proc inside container
- *   - stdout / stderr redirected to the supervisor logging path
- *   - configured command executed inside the container
+ * Runs inside new PID, UTS, and mount namespaces. Sets up:
+ *   - hostname to the container id
+ *   - chroot into the container rootfs
+ *   - /proc mount inside the container
+ *   - stdout/stderr redirected to the logging pipe
+ *   - nice value if requested
+ * Then execs the requested command.
  */
 int child_fn(void *arg)
 {
-    (void)arg;
+    child_config_t *cfg = (child_config_t *)arg;
+
+    /* Set hostname to container id so UTS namespace is visible */
+    if (sethostname(cfg->id, strlen(cfg->id)) != 0) {
+        perror("child_fn: sethostname");
+        return 1;
+    }
+
+    /* chroot into the container rootfs */
+    if (chroot(cfg->rootfs) != 0) {
+        perror("child_fn: chroot");
+        return 1;
+    }
+
+    /* Change working directory to root of the new filesystem */
+    if (chdir("/") != 0) {
+        perror("child_fn: chdir");
+        return 1;
+    }
+
+    /* Mount /proc so process tools work inside the container */
+    if (mount("proc", "/proc", "proc",
+              MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) != 0) {
+        /* Non-fatal: warn but continue */
+        perror("child_fn: mount /proc");
+    }
+
+    /* Redirect stdout and stderr to the supervisor logging pipe */
+    if (cfg->log_write_fd >= 0) {
+        if (dup2(cfg->log_write_fd, STDOUT_FILENO) < 0) {
+            perror("child_fn: dup2 stdout");
+            return 1;
+        }
+        if (dup2(cfg->log_write_fd, STDERR_FILENO) < 0) {
+            perror("child_fn: dup2 stderr");
+            return 1;
+        }
+        /* Close the original write end — we now have it as 1 and 2 */
+        close(cfg->log_write_fd);
+    }
+
+    /* Apply nice value if non-zero */
+    if (cfg->nice_value != 0) {
+        errno = 0;
+        if (nice(cfg->nice_value) == -1 && errno != 0)
+            perror("child_fn: nice");
+    }
+
+    /* Execute the requested command inside the container */
+    char *const argv[] = { "/bin/sh", "-c", cfg->command, NULL };
+    execv("/bin/sh", argv);
+
+    /* execv only returns on error */
+    perror("child_fn: execv");
     return 1;
 }
 
