@@ -4,8 +4,8 @@
 
 | Name | SRN |
 |------|-----|
-| Sanjana S Aithal | [Your SRN] |
-| [Teammate Name] | [Teammate SRN] |
+| Sanjana S Aithal | PES1UG24CS421 |
+| Sameeksha P Kumar | PES1UG24CS410 |
 
 ---
 
@@ -129,34 +129,54 @@ sudo dmesg | tail -5
 
 ### Screenshot 1 — Multi-container supervision
 Two containers (alpha and beta) running under one supervisor process, each started with `./engine start`.
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/1cee9e34-517c-48ea-8349-10be6d6e9f4a" />
+
 
 ### Screenshot 2 — Metadata tracking
 Output of `./engine ps` showing container ID, PID, state, exit code, and start time for all tracked containers.
+<img width="866" height="629" alt="image" src="https://github.com/user-attachments/assets/52bfbe75-16cc-4510-bfd6-b91b4ee57c7a" />
 
 ### Screenshot 3 — Bounded-buffer logging
 Output of `./engine logs alpha` and `./engine logs beta` showing container stdout captured through the logging pipeline.
+<img width="866" height="629" alt="image" src="https://github.com/user-attachments/assets/c89ceb0b-524c-4473-bbb3-315879465ab6" />
+
 
 ### Screenshot 4 — CLI and IPC
 CLI commands (`start`, `ps`, `logs`) being issued and the supervisor responding over the UNIX domain socket at `/tmp/mini_runtime.sock`.
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/1cee9e34-517c-48ea-8349-10be6d6e9f4a" />
+<img width="866" height="629" alt="image" src="https://github.com/user-attachments/assets/34e8d8a0-c820-4eb1-ba7d-d3bfcf69d38e" />
+
 
 ### Screenshot 5 — Soft-limit warning
 `dmesg` output showing:
 ```
 [container_monitor] SOFT LIMIT container=hogtest2 pid=21885 rss=17375232 limit=10485760
 ```
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/2ef9e9bd-0667-4a01-b556-57c8e726edd4" />
+
 
 ### Screenshot 6 — Hard-limit enforcement
 `dmesg` output showing:
 ```
 [container_monitor] HARD LIMIT container=hogtest2 pid=21885 rss=25763840 limit=20971520
 ```
-Container was killed by the kernel module after exceeding the 20MB hard limit.
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/5f783b93-6c54-48d8-9709-1438068130b6" />
+
 
 ### Screenshot 7 — Scheduler experiment
 Logs from cpu-low (nice 0) and cpu-high (nice 10) running concurrently, and logs from cpu-exp vs io-exp showing different iteration counts in the same time window.
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/549db1da-7fc8-4c66-9c46-bde1d0d67f96" />
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/e0bbf80c-a912-41f9-b5ca-13f242a728d5" />
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/17688b7a-9c83-426f-9637-945a650a0533" />
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/3abfb454-b6ae-42c8-952b-9d1e19517644" />
+
+
 
 ### Screenshot 8 — Clean teardown
 `ps aux | grep defunct` showing no zombie processes, and `dmesg` showing module unloaded cleanly with all entries freed.
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/94a4b1a6-823c-4094-b311-533246869a05" />
+<img width="1186" height="783" alt="image" src="https://github.com/user-attachments/assets/30026d93-6ab9-42f9-9799-57969c29652b" />
+
 
 ---
 
